@@ -82,6 +82,8 @@ Optional flags (from the common Linux platform options):
   deleting one file).
 - `--interface-id <iface>` — restrict mDNS/transports to one interface; useful
   on Docker-heavy hosts as an alternative to the endpoint-pool raise.
+- `--fault-socket <path>` — override the fault injection control socket
+  (default `/tmp/matter_fault.sock`, see section 8).
 
 > The commissioning window is open for 15 minutes after boot. After that the
 > device stops advertising commissionable mode — restart (with a factory
@@ -143,20 +145,43 @@ rm -f /tmp/chip_tool_kvs /tmp/chip_tool_config.ini /tmp/chip_tool_config.alpha.i
 | `Failed to advertise records ... 0x00000046` in device log | mDNS trying to multicast on Docker interfaces. Non-fatal — service still publishes on real interfaces. |
 | `Run command failure: ... 0x0000002F` for `pairing ethernet` | Subcommand removed. Use `pairing code <node-id> <payload>`. |
 
-## 8. Fault injection control interface (status)
+## 8. Fault injection control interface
 
-The control interface (Step 1) is implemented and built into the emulator, but
-**not started at runtime yet** — `FaultSocketServer::Start()` still needs to be
-called from `examples/lighting-app/linux/main.cpp` (Step 3 in
-FULT_INJECTION_ORIENT.md). Once wired, the socket will accept newline-terminated
-JSON, e.g.:
+The emulator starts a fault injection control socket on
+`/tmp/matter_fault.sock` at boot (override with `--fault-socket <path>`).
+Startup log line: `FaultSocket: listening on /tmp/matter_fault.sock`.
 
-```json
-{"action": "configure", "fault": {"type": "data_corruption", "scope": "attribute", "cluster": "0x0006", "attribute": 0, "corrupt_value": true}}
-{"action": "configure", "fault": {"type": "timing_delay", "cluster": "0x0006", "delay_ms": 12000}}
-{"action": "clear", "cluster": "0x0006", "attribute": 0}
-{"action": "clear_all"}
+The socket accepts newline-terminated JSON, one command per connection, and
+replies `{"result":"ok"}` or `{"result":"error","detail":"..."}`.
+
+**Quick test with Python:**
+
+```bash
+python3 - <<'EOF'
+import socket
+def send(payload):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect("/tmp/matter_fault.sock")
+    s.sendall((payload + "\n").encode())
+    print(s.recv(4096).decode().strip())
+    s.close()
+
+send('{"action": "configure", "fault": {"type": "data_corruption", "scope": "attribute", "cluster": "0x0006", "attribute": 0, "corrupt_value": true}}')
+send('{"action": "configure", "fault": {"type": "timing_delay", "cluster": "0x0008", "delay_ms": 12000}}')
+send('{"action": "clear_all"}')
+EOF
 ```
 
-Interception hooks (Step 2) are also pending — faults can be configured but do
-not affect attribute reads or command handling yet.
+**Actions:** `configure`, `clear` (cluster + attribute), `clear_all`.
+
+**Fault fields:** `type` (`data_corruption` | `timing_delay` | `command_drop` |
+`invalid_status`), `scope` (`attribute` | `command`, default attribute),
+`cluster` (int or `"0x0006"` string, required), `attribute`, `command`,
+`delay_ms`, `status`, `corrupt_value` (bool/int/float).
+
+Successful configs log on the device, e.g.
+`FaultInjector: configured data_corruption fault on cluster 0x00000006`.
+
+> **Status note:** configuring/clearing works end to end, but the interception
+> hooks (Step 2 in FULT_INJECTION_ORIENT.md) are not implemented yet — faults
+> do not yet affect attribute reads, command handling, or timing.

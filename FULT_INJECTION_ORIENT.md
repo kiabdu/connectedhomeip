@@ -137,11 +137,13 @@ Fault events are logged as JSON:
 }
 ```
 
-### Current Phase: Step 1 (COMPLETE) + Steps 2-4 (Pending)
+### Current Phase: Steps 1 + 3 (COMPLETE), Steps 2 + 4 (Pending)
 
 **Objective**: Create the basic fault injection control interface.
 
-**Status: Step 1 is done, build-verified, and commissioning-verified end to end.**
+**Status: control interface and app integration are done, build-verified, and
+commissioning-verified end to end. Faults are configurable at runtime via the
+Unix socket; they do not affect attribute/command handling yet (Step 2).**
 
 **Completed** (all committed on branch `fault-injection-feature`):
 - [x] Created `examples/common/fault_injection/` directory
@@ -182,12 +184,19 @@ examples/common/fault_injection/
 ```
 
 **Still Missing**:
-- [ ] Step 2: Interception points — nothing calls the FaultInjector yet.
-  Needs: `AttributeAccessInterface` hook (attribute reads/writes),
-  `InteractionModelEngine` command hook, exchange-layer timing hook
-- [ ] Step 3: Integration — `FaultSocketServer::Start()` is not called from
-  `examples/lighting-app/linux/main.cpp` (BUILD.gn is wired, runtime is not)
+- [ ] Step 2: Interception points — faults can be configured but nothing
+  consults the FaultInjector yet. Needs: `AttributeAccessInterface` hook
+  (attribute reads/writes), `InteractionModelEngine` command hook,
+  exchange-layer timing hook
 - [ ] Step 4: Python test harness (client library, test sequences, metrics)
+
+**Done since Step 1**:
+- [x] Step 3: Integration — `FaultSocketServer` starts from
+  `ApplicationInit()` in `examples/lighting-app/linux/main.cpp`, stops in
+  `ApplicationShutdown()`. Socket path defaults to `/tmp/matter_fault.sock`,
+  overridable with `--fault-socket <path>` (option in `AppOptions.cpp`, now
+  compiled and registered unconditionally). Verified live: JSON commands
+  configure/clear faults, responses and log events work end to end.
 
 ### Important Environment Info (read before building)
 
