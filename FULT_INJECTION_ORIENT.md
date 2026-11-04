@@ -137,35 +137,89 @@ Fault events are logged as JSON:
 }
 ```
 
-### Current Phase: Step 1 (Start Here)
+### Current Phase: Step 1 (COMPLETE) + Steps 2-4 (Pending)
 
 **Objective**: Create the basic fault injection control interface.
 
-**Completed**:
+**Status: Step 1 is done, build-verified, and commissioning-verified end to end.**
+
+**Completed** (all committed on branch `fault-injection-feature`):
 - [x] Created `examples/common/fault_injection/` directory
-- [x] Created `FaultInjector.h` with:
+- [x] `FaultInjector.h` with:
   - `FaultType` enum (kDataCorruption, kTimingDelay, kCommandDrop, kInvalidStatus)
+  - `FaultTarget` enum (attribute vs command matching)
+  - `FaultValueType` enum (discriminator for the corruptValue union)
   - `FaultConfig` struct for configuration
   - `FaultInjectorDelegate` interface for notifications
-  - `FaultInjector` singleton class
-- [x] Created `FaultInjector.cpp` with:
-  - JSON parsing using jsoncpp
-  - Fault configuration storage
-  - Matching logic for attribute paths
-  - Data corruption, timing delay, and status code hooks
+  - `FaultInjector` singleton class (max 16 faults, fixed array, no heap)
+- [x] `FaultInjector.cpp` with:
+  - Fault configuration storage (configure/replace/clear/clear-all)
+  - Matching logic for attribute paths and commands
+  - `ApplyDataCorruption` (TLV write of int/float/bool corrupt values)
+  - Delay, command-drop, and injected-status helpers
+  - Delegate notifications + ChipLog events
+  - Note: JSON parsing is NOT here — it lives in FaultSocket.cpp (transport-agnostic core)
+- [x] `FaultSocket.h` + `FaultSocket.cpp` with:
+  - POSIX Unix domain socket server, accept loop on its own thread
+  - JSON command dispatch (jsoncpp): `configure`, `clear`, `clear_all`
+  - JSON response: `{"result":"ok"}` / `{"result":"error","detail":"..."}`
+  - JSON fault schema: `type` (data_corruption|timing_delay|command_drop|invalid_status),
+    `scope` (attribute|command), `cluster` (int or "0x0006" string), `attribute`/`command`,
+    `delay_ms`, `status`, `corrupt_value` (bool/int/float)
+- [x] Build wiring: `fault_injection/BUILD.gn`, `examples/common/BUILD.gn`,
+  dep added to `examples/lighting-app/linux/BUILD.gn`
+- [x] Verified: lighting app builds and runs; chip-tool commissions and
+  reads/writes OnOff attributes (see docs/how-to.md)
 
 **Files Created**:
 ```
 examples/common/fault_injection/
-├── BUILD.gn              # Build configuration
-├── FaultInjector.h       # Header with class definitions
-├── FaultInjector.cpp     # Implementation with JSON parsing
-└── FaultSocket.h         # (next) Unix domain socket server
+├── BUILD.gn              # GN target with deps (src/lib, jsoncpp)
+├── FaultInjector.h       # Types, config, singleton interface
+├── FaultInjector.cpp     # Storage, matching, corruption/status logic
+├── FaultSocket.h         # Unix domain socket server interface
+└── FaultSocket.cpp       # Socket accept loop + JSON dispatch
 ```
 
-**Next Task**: Create `FaultSocket.h` - Unix Domain Socket server for JSON command interface
+**Still Missing**:
+- [ ] Step 2: Interception points — nothing calls the FaultInjector yet.
+  Needs: `AttributeAccessInterface` hook (attribute reads/writes),
+  `InteractionModelEngine` command hook, exchange-layer timing hook
+- [ ] Step 3: Integration — `FaultSocketServer::Start()` is not called from
+  `examples/lighting-app/linux/main.cpp` (BUILD.gn is wired, runtime is not)
+- [ ] Step 4: Python test harness (client library, test sequences, metrics)
 
-**Constraints**:
+### Important Environment Info (read before building)
+
+- **Build layout**: `build_examples.py` for linux targets sets the GN root to
+  `examples/<app>/linux` with `chip_root = //third_party/connectedhomeip`
+  (a symlink back to the repo root created for the VS Code flow). Do not run
+  raw `gn gen` from the repo root for these builds.
+- **Endpoint pool fix**: the Linux platform defaults to 32 TCP + 32 UDP
+  endpoints; the select system layer sizes its socket pool from those. On
+  hosts with many Docker veth/bridge interfaces, mDNS (one socket per address)
+  exhausts the pool and the app dies with
+  `CHIP Error 0x000000C1: Endpoint pool full`. Fixed by
+  `examples/common/InetProjectConfig.h` (128+128), wired via
+  `chip_inet_project_config_include` in both
+  `examples/lighting-app/linux/args.gni` and `examples/chip-tool/args.gni`.
+- **chip-tool java deps 403**: `third_party/java_deps/set_up_java_deps.sh`
+  downloads `google-collect-1.0-rc1.jar` from `dist.wso2.org`, which blocks
+  curl's default User-Agent with 403. Workaround: download the jar with a
+  browser User-Agent into `third_party/java_deps/artifacts/` (the script
+  skips files that already exist). Not on Maven Central.
+- **chip-tool pairing**: the `pairing ethernet` subcommand no longer exists.
+  Use `pairing code <node-id> <payload>` (mDNS discovery based). Verified
+  payload: `MT:-24J042C00KA0648G00` (PIN 20202021, discriminator 3840).
+- **Factory reset**: `pkill -f chip-lighting-app`, delete
+  `/tmp/chip_kvs*`, `/tmp/chip_config.ini`, `/tmp/chip_factory.ini`,
+  `/tmp/chip_counters.ini` (device) and `/tmp/chip_tool_*` (controller),
+  then restart. The commissioning window only opens once per boot.
+- **Non-fatal noise**: `Failed to advertise records ... 0x00000046` in the
+  device log is mDNS trying to multicast on Docker interfaces that do not
+  support it. Service still publishes on real interfaces.
+
+### Constraints
 - Use C++17
 - Follow CHIP SDK coding style (CHIP_ERROR, VerifyOrReturnError, etc.)
 - Use POSIX Unix domain sockets
