@@ -48,6 +48,7 @@ executable("chip-lighting-app") {
 
   defines = []
   deps = [
+    "${chip_root}/examples/common/fault_injection",
     "${chip_root}/examples/lighting-app/lighting-common",
     "${chip_root}/examples/lighting-app/lighting-common:lighting-manager",
     "${chip_root}/examples/platform/linux:app-main",
