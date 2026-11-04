@@ -20,8 +20,10 @@
 #include "LightingManager.h"
 #include <AppMain.h>
 
-#if CHIP_EXAMPLE_ENABLE_DIAGNOSTIC_LOGS
 #include "AppOptions.h"
+#include <FaultSocket.h>
+
+#if CHIP_EXAMPLE_ENABLE_DIAGNOSTIC_LOGS
 #include "diagnostic-logs-provider-delegate-impl.h"
 #include <app/clusters/diagnostic-logs-server/diagnostic-logs-server.h>
 #endif
@@ -53,6 +55,7 @@ namespace {
 
 NamedPipeCommands sChipNamedPipeCommands;
 LightingAppCommandDelegate sLightingAppCommandDelegate;
+chip::fault_injection::FaultSocketServer sFaultSocketServer;
 } // namespace
 
 void MatterPostAttributeChangeCallback(const chip::app::ConcreteAttributePath & attributePath, uint8_t type, uint16_t size,
@@ -106,6 +109,16 @@ void ApplicationInit()
         ChipLogError(NotSpecified, "Failed to start CHIP NamedPipeCommands");
         TEMPORARY_RETURN_IGNORED sChipNamedPipeCommands.Stop();
     }
+
+    const char * faultSocketPath = AppOptions::GetFaultSocketPath();
+    if (faultSocketPath == nullptr)
+    {
+        faultSocketPath = "/tmp/matter_fault.sock";
+    }
+    if (sFaultSocketServer.Start(faultSocketPath) != CHIP_NO_ERROR)
+    {
+        ChipLogError(AppServer, "Failed to start FaultSocketServer on %s", faultSocketPath);
+    }
 }
 
 void ApplicationShutdown()
@@ -114,6 +127,8 @@ void ApplicationShutdown()
     {
         ChipLogError(NotSpecified, "Failed to stop CHIP NamedPipeCommands");
     }
+
+    sFaultSocketServer.Stop();
 }
 
 #ifdef __NuttX__
@@ -125,11 +140,7 @@ extern "C" {
 
 int main(int argc, char * argv[])
 {
-#if CHIP_EXAMPLE_ENABLE_DIAGNOSTIC_LOGS
     if (ChipLinuxAppInit(argc, argv, AppOptions::GetOptions()) != 0)
-#else
-    if (ChipLinuxAppInit(argc, argv) != 0)
-#endif
     {
         return -1;
     }

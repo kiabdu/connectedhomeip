@@ -29,6 +29,7 @@ public:
     static chip::Optional<std::string> GetEndUserSupportLogFilePath();
     static chip::Optional<std::string> GetNetworkDiagnosticsLogFilePath();
     static chip::Optional<std::string> GetCrashLogFilePath();
+    static const char * GetFaultSocketPath();
 
 private:
     static bool HandleOptions(const char * program, chip::ArgParser::OptionSet * options, int identifier, const char * name,

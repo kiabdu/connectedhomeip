@@ -30,10 +30,12 @@ using chip::ArgParser::PrintArgError;
 constexpr uint16_t kOptionEndUserSupportFilePath     = 0xFF03;
 constexpr uint16_t kOptionNetworkDiagnosticsFilePath = 0xFF04;
 constexpr uint16_t kOptionCrashFilePath              = 0xFF05;
+constexpr uint16_t kOptionFaultSocketPath            = 0xFF06;
 
 static chip::Optional<std::string> sEndUserSupportLogFilePath;
 static chip::Optional<std::string> sNetworkDiagnosticsLogFilePath;
 static chip::Optional<std::string> sCrashLogFilePath;
+static const char * sFaultSocketPath = nullptr;
 
 bool AppOptions::IsEmptyString(const char * value)
 {
@@ -66,6 +68,13 @@ bool AppOptions::HandleOptions(const char * program, OptionSet * options, int id
         }
         break;
     }
+    case kOptionFaultSocketPath: {
+        if (!IsEmptyString(value))
+        {
+            sFaultSocketPath = value;
+        }
+        break;
+    }
     default:
         PrintArgError("%s: INTERNAL ERROR: Unhandled option: %s\n", program, name);
         retval = false;
@@ -81,6 +90,7 @@ OptionSet * AppOptions::GetOptions()
         { "end_user_support_log", kArgumentRequired, kOptionEndUserSupportFilePath },
         { "network_diagnostics_log", kArgumentRequired, kOptionNetworkDiagnosticsFilePath },
         { "crash_log", kArgumentRequired, kOptionCrashFilePath },
+        { "fault-socket", kArgumentRequired, kOptionFaultSocketPath },
         {},
     };
 
@@ -90,7 +100,10 @@ OptionSet * AppOptions::GetOptions()
                                  "  --network_diagnostics_log <value>\n"
                                  "       The network diagnostics log file to be used for diagnostic logs transfer.\n"
                                  "  --crash_log <value>\n"
-                                 "       The crash log file to be used for diagnostic logs transfer.\n" };
+                                 "       The crash log file to be used for diagnostic logs transfer.\n"
+                                 "  --fault-socket <path>\n"
+                                 "       Unix domain socket for the fault injection JSON control interface\n"
+                                 "       (default: /tmp/matter_fault.sock).\n" };
 
     return &options;
 }
@@ -108,4 +121,9 @@ chip::Optional<std::string> AppOptions::GetNetworkDiagnosticsLogFilePath()
 chip::Optional<std::string> AppOptions::GetCrashLogFilePath()
 {
     return sCrashLogFilePath;
+}
+
+const char * AppOptions::GetFaultSocketPath()
+{
+    return sFaultSocketPath;
 }

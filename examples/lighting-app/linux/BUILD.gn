@@ -41,6 +41,7 @@ config("includes") {
 
 executable("chip-lighting-app") {
   sources = [
+    "AppOptions.cpp",
     "LightingAppCommandDelegate.cpp",
     "include/CHIPProjectAppConfig.h",
     "main.cpp",
@@ -58,10 +59,7 @@ executable("chip-lighting-app") {
     "${chip_root}/third_party/jsoncpp",
   ]
   if (chip_examples_enable_diagnostic_logs) {
-    sources += [
-      "AppOptions.cpp",
-      "diagnostic-logs-provider-delegate-impl.cpp",
-    ]
+    sources += [ "diagnostic-logs-provider-delegate-impl.cpp" ]
 
     deps += [ "${chip_root}/src/app/clusters/diagnostic-logs-server" ]
 
