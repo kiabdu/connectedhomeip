@@ -1,6 +1,6 @@
 /*
  *
- *    Copyright (c) 2025 Project CHIP Authors
+ *    Copyright (c) 2026 Project CHIP Authors
  *    All rights reserved.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <string>
+#include <thread>
 
 #include <lib/core/CHIPError.h>
 
@@ -29,8 +30,10 @@ namespace fault_injection {
 /**
  * @brief Unix domain socket server for receiving fault injection commands
  *
- * Listens on a configurable socket path and accepts JSON commands
- * to configure, trigger, or clear fault injections.
+ * Listens on a configurable socket path and accepts newline-terminated JSON
+ * commands to configure or clear fault injections. Each connection is
+ * handled synchronously on a dedicated thread; the response is a single
+ * JSON line of the form {"result":"ok"} or {"result":"error","detail":"..."}.
  */
 class FaultSocketServer
 {
@@ -41,13 +44,17 @@ public:
     /**
      * @brief Start listening for fault injection commands
      *
+     * Starts a thread that accepts connections and dispatches incoming
+     * JSON commands to FaultInjector::Instance().
+     *
      * @param socketPath Path to the Unix domain socket (e.g., "/tmp/matter_fault.sock")
      * @return CHIP_ERROR Result of socket initialization
      */
     CHIP_ERROR Start(const char * socketPath);
 
     /**
-     * @brief Stop listening and close the socket
+     * @brief Stop listening, close the socket, and wait for the accept
+     * thread to exit.
      */
     void Stop();
 
@@ -57,9 +64,13 @@ public:
     bool IsRunning() const { return mRunning; }
 
 private:
-    bool mRunning = false;
-    int mSocketFd = -1;
+    void AcceptLoop();
+    void HandleConnection(int connectionFd);
+
+    bool mRunning  = false;
+    int mSocketFd  = -1;
     std::string mSocketPath;
+    std::thread mThread;
 };
 
 } // namespace fault_injection
