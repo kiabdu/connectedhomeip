@@ -1,6 +1,6 @@
 /*
  *
- *    Copyright (c) 2025 Project CHIP Authors
+ *    Copyright (c) 2026 Project CHIP Authors
  *    All rights reserved.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,11 +19,11 @@
 #pragma once
 
 #include <cstdint>
-#include <optional>
 
 #include <lib/core/CHIPError.h>
-#include <lib/core/Optional.h>
-#include <app/ClusterProvider.h>
+#include <lib/core/DataModelTypes.h>
+#include <lib/core/TLV.h>
+#include <protocols/interaction_model/StatusCode.h>
 
 namespace chip {
 namespace fault_injection {
@@ -33,11 +33,30 @@ namespace fault_injection {
  */
 enum class FaultType : uint8_t
 {
-    kNone            = 0,
-    kDataCorruption  = 1,
-    kTimingDelay     = 2,
-    kCommandDrop     = 3,
-    kInvalidStatus   = 4,
+    kNone           = 0,
+    kDataCorruption = 1,
+    kTimingDelay    = 2,
+    kCommandDrop    = 3,
+    kInvalidStatus  = 4,
+};
+
+/**
+ * @brief Selects whether a fault matches attribute accesses or command invocations
+ */
+enum class FaultTarget : uint8_t
+{
+    kAttribute = 1,
+    kCommand   = 2,
+};
+
+/**
+ * @brief Selects which member of FaultConfig::corruptValue is valid
+ */
+enum class FaultValueType : uint8_t
+{
+    kInt32 = 1,
+    kFloat = 2,
+    kBool  = 3,
 };
 
 /**
@@ -45,14 +64,15 @@ enum class FaultType : uint8_t
  */
 struct FaultConfig
 {
-    FaultType faultType     = FaultType::kNone;
-    chip::ClusterId cluster = 0;
-    chip::AttributeId attribute;
-    chip::CommandId command        = 0;
-    uint32_t delayMs               = 0;
-    chip::Protocols::InteractionModel::Status status =
-        chip::Protocols::InteractionModel::Status::Success;
+    FaultType faultType = FaultType::kNone;
+    FaultTarget target  = FaultTarget::kAttribute;
+    ClusterId cluster  = 0;
+    AttributeId attribute = 0;
+    CommandId command    = 0;
+    uint32_t delayMs     = 0;
+    Protocols::InteractionModel::Status status = Protocols::InteractionModel::Status::Success;
 
+    FaultValueType corruptValueType = FaultValueType::kInt32;
     union
     {
         int32_t intValue;
@@ -83,19 +103,19 @@ public:
     void SetDelegate(FaultInjectorDelegate * delegate);
 
     CHIP_ERROR ConfigureFault(const FaultConfig & config);
-    void ClearFault(chip::ClusterId cluster, chip::AttributeId attribute);
+    void ClearFault(ClusterId cluster, AttributeId attribute);
     void ClearAllFaults();
 
-    bool HasFaultForAttribute(chip::ClusterId cluster, chip::AttributeId attribute) const;
-    bool HasFaultForCommand(chip::ClusterId cluster, chip::CommandId command) const;
+    bool HasFaultForAttribute(ClusterId cluster, AttributeId attribute) const;
+    bool HasFaultForCommand(ClusterId cluster, CommandId command) const;
 
-    const FaultConfig * GetFaultForAttribute(chip::ClusterId cluster, chip::AttributeId attribute) const;
-    const FaultConfig * GetFaultForCommand(chip::ClusterId cluster, chip::CommandId command) const;
+    const FaultConfig * GetFaultForAttribute(ClusterId cluster, AttributeId attribute) const;
+    const FaultConfig * GetFaultForCommand(ClusterId cluster, CommandId command) const;
 
-    CHIP_ERROR ApplyDataCorruption(const FaultConfig & config, chip::TLV::TLVWriter & writer);
+    CHIP_ERROR ApplyDataCorruption(const FaultConfig & config, TLV::TLVWriter & writer);
     uint32_t GetDelayForFault(const FaultConfig & config) const;
     bool ShouldDropCommand(const FaultConfig & config) const;
-    chip::Protocols::InteractionModel::Status GetInjectedStatus(const FaultConfig & config) const;
+    Protocols::InteractionModel::Status GetInjectedStatus(const FaultConfig & config) const;
 
 private:
     FaultInjector()  = default;
