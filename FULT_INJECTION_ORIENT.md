@@ -43,9 +43,10 @@ Current Matter testing tools assume healthy device behavior. We need to test edg
 
 | Component | File Location | Purpose |
 |-----------|---------------|---------|
-| FaultInjector | `examples/common/fault_injection/` | Core fault logic, JSON parsing, Unix socket |
-| Attribute Hook | `src/app/` | Intercept attribute reads/writes |
-| Command Hook | `src/app/` | Intercept command execution |
+| FaultInjector | `examples/common/fault_injection/FaultInjector.*` | Fault storage and matching (no JSON, no sockets) |
+| FaultSocket | `examples/common/fault_injection/FaultSocket.*` | Unix socket server, JSON parsing and dispatch |
+| Attribute Hook | `src/app/data-model-provider/` (see Key Files) | Intercept attribute reads/writes |
+| Command Hook | `src/app/data-model-provider/` (see Key Files) | Intercept command execution |
 | Integration | `examples/lighting-app/linux/` | Wire everything together |
 
 ### Fault Types Supported
@@ -91,21 +92,22 @@ Current Matter testing tools assume healthy device behavior. We need to test edg
 ### Key Files to Modify
 
 ```
-src/app/
-├── AttributeAccessInterface.h       # Add fault hook
-├── InteractionModelEngine.cpp       # Add command hook
-└── ...
+src/app/data-model-provider/
+└── Provider.h                        # ReadAttribute / WriteAttribute / InvokeCommand
 
-examples/
-└── common/
-    └── fault_injection/              # NEW: FaultInjector class
-        ├── FaultInjector.h
-        ├── FaultInjector.cpp
-        └── FaultSocket.h
-
-examples/lighting-app/linux/
-└── main.cpp                          # Initialize FaultInjector
+examples/common/fault_injection/      # DONE: FaultInjector + FaultSocket
+examples/lighting-app/linux/main.cpp  # DONE: starts/stops FaultSocketServer
 ```
+
+**Hook location for Step 2:** On/Off (`OnOffCluster`) and Level Control
+(`LevelControlCluster`) are code-driven clusters (`DefaultServerCluster`
+subclasses in `src/app/clusters/`). An `AttributeAccessInterface` hook does
+not see their reads. The Interaction Model reaches every cluster through
+`DataModel::Provider::ReadAttribute`, `WriteAttribute` and `InvokeCommand`
+(`src/app/data-model-provider/Provider.h`). A provider that wraps the app's
+provider and consults `FaultInjector` before forwarding covers all clusters
+without patching `src/app/` internals. Verify this against the current code
+before implementing.
 
 ### Testing Clusters (Priority Order)
 
@@ -123,9 +125,11 @@ When a fault is configured:
 4. Log entry emitted with timestamp and details
 5. Modified response sent to controller
 
-### Output Format
+### Output Format (planned, not implemented)
 
-Fault events are logged as JSON:
+Today FaultInjector only emits a plain `ChipLogProgress` line on configure,
+e.g. `FaultInjector: configured data_corruption fault on cluster 0x00000006`.
+Once the Step 2 hooks exist, triggered faults should be logged as JSON:
 ```json
 {
   "timestamp": 1730668800,
@@ -164,7 +168,8 @@ Unix socket; they do not affect attribute/command handling yet (Step 2).**
 - [x] `FaultSocket.h` + `FaultSocket.cpp` with:
   - POSIX Unix domain socket server, accept loop on its own thread
   - JSON command dispatch (jsoncpp): `configure`, `clear`, `clear_all`
-  - JSON response: `{"result":"ok"}` / `{"result":"error","detail":"..."}`
+    via `ProcessFaultRequest()` (unit-testable without a socket)
+  - JSON response: `{"result":"ok"}` / `{"result":"error","detail":"<fixed reason>"}`
   - JSON fault schema: `type` (data_corruption|timing_delay|command_drop|invalid_status),
     `scope` (attribute|command), `cluster` (int or "0x0006" string), `attribute`/`command`,
     `delay_ms`, `status`, `corrupt_value` (bool/int/float)
@@ -176,19 +181,72 @@ Unix socket; they do not affect attribute/command handling yet (Step 2).**
 **Files Created**:
 ```
 examples/common/fault_injection/
-├── BUILD.gn              # GN target with deps (src/lib, jsoncpp)
+├── BUILD.gn              # :fault_injector (core, src/lib only)
+│                         # :fault_injection (socket, + jsoncpp, src/platform)
 ├── FaultInjector.h       # Types, config, singleton interface
 ├── FaultInjector.cpp     # Storage, matching, corruption/status logic
-├── FaultSocket.h         # Unix domain socket server interface
-└── FaultSocket.cpp       # Socket accept loop + JSON dispatch
+├── FaultSocket.h         # Socket server + ProcessFaultRequest()
+├── FaultSocket.cpp       # Accept loop, JSON parsing and dispatch
+└── tests/                # pw_unit_test suites (libFaultInjectionTests)
 ```
 
 **Still Missing**:
 - [ ] Step 2: Interception points — faults can be configured but nothing
-  consults the FaultInjector yet. Needs: `AttributeAccessInterface` hook
-  (attribute reads/writes), `InteractionModelEngine` command hook,
-  exchange-layer timing hook
+  consults the FaultInjector yet. Needs attribute read/write, command and
+  timing hooks; see "Hook location for Step 2" under Key Files
 - [ ] Step 4: Python test harness (client library, test sequences, metrics)
+- [ ] Integration test that drives the real socket (Start/Stop, read
+  timeout). The JSON handling and FaultInjector are unit tested; the socket
+  thread itself is not.
+- [ ] Separate read and write faults for attributes. An attribute fault has
+  no read/write flag yet; decide when the Step 2 write hook is added.
+- [ ] More corrupt value types if needed (uint64, strings, lists, structs).
+- [ ] Wire the socket into `examples/all-devices-app` (has a
+  `temperature-sensor` device type). Move `--fault-socket` from the lighting
+  app's `AppOptions` to a shared place first, so apps do not copy it.
+
+**Code review fixes (2026-11-05, not yet built — see "Verification" below)**:
+- [x] Command faults matched only command ID 0. `Matches()` now takes one
+  path ID, so attribute and command IDs cannot be swapped.
+- [x] Wrongly typed JSON fields aborted the app (jsoncpp is built with
+  `JSON_USE_EXCEPTION=0`). Every field is type-checked before conversion;
+  bad input returns an error response.
+- [x] Error responses embedded unescaped jsoncpp text. All responses are now
+  fixed strings (`invalid json`, `unknown action`, `invalid fault`,
+  `invalid clear`, `fault table full`).
+- [x] A client that never sent a line blocked the server and app shutdown.
+  Connections have a 1 s read/write timeout; the accept loop polls every
+  200 ms and exits when `Stop()` clears `mRunning` (now `std::atomic<bool>`).
+  The listening fd is closed only after the thread has joined.
+- [x] FaultInjector was mutated from the socket thread without a lock. The
+  socket thread now holds the Matter stack lock (`DeviceLayer::StackLock`)
+  while applying a command. Contract: FaultInjector is only used on the
+  Matter event loop or with the stack lock held.
+- [x] Silent truncation: number strings must parse fully, `status` must be
+  0–255, `corrupt_value` must fit int32/float. `data_corruption` requires
+  `corrupt_value`, `timing_delay` requires `delay_ms > 0`, `invalid_status`
+  requires `status`. The `corruptValue` union is zero-initialized.
+- [x] `clear` accepts `"scope": "command"` + `command`.
+  API: `ClearFault()` became `ClearAttributeFault()` / `ClearCommandFault()`.
+- [x] `ApplyDataCorruption()` takes the TLV tag from the caller.
+- [x] Removed the unused, broken `examples/common/BUILD.gn` group.
+- [x] Endpoint matching: optional `endpoint` in `FaultConfig` and JSON
+  (`configure` and `clear`); empty = all endpoints; endpoint-specific faults
+  win over all-endpoints faults. Lookup/clear APIs take an endpoint.
+- [x] `null` corrupt values (`FaultValueType::kNull`, `"corrupt_value": null`)
+  for nullable attributes such as Temperature Measurement MeasuredValue.
+- [x] Unit tests: `examples/common/fault_injection/tests/`
+  (`TestFaultInjector.cpp`, `TestFaultSocketRequests.cpp`), registered in
+  `src/BUILD.gn` `example_tests` for linux/darwin.
+
+**Verification**: the fixes were written on a macOS checkout without
+submodules and have NOT been compiled yet. On the Linux build machine run:
+```
+scripts/run_in_build_env.sh "./scripts/build/build_examples.py --target linux-x64-tests-clang --quiet gen"
+scripts/run_in_build_env.sh "ninja -C out/linux-x64-tests-clang examples/common/fault_injection/tests:libFaultInjectionTests.run"
+scripts/run_in_build_env.sh "./scripts/build/build_examples.py --target linux-x64-light --quiet build"
+```
+Then repeat the socket smoke test in docs/how-to.md section 8.
 
 **Done since Step 1**:
 - [x] Step 3: Integration — `FaultSocketServer` starts from
@@ -233,3 +291,9 @@ examples/common/fault_injection/
 - Follow CHIP SDK coding style (CHIP_ERROR, VerifyOrReturnError, etc.)
 - Use POSIX Unix domain sockets
 - Parse JSON commands and call `FaultInjector::ConfigureFault()`
+- Add unit tests with every change (see CLAUDE.md, "Testing")
+- jsoncpp is built with `JSON_USE_EXCEPTION=0`: check a value's type before
+  any `as*()` / `isMember()` / `operator[]` call, or the app aborts
+- FaultInjector is not thread-safe: use it on the Matter event loop or with
+  `DeviceLayer::StackLock` held. Step 2 delays must use timers, not sleeps,
+  because a sleep on the event loop stalls the whole stack

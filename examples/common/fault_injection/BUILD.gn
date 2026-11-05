@@ -19,21 +19,26 @@ config("fault_injection_config") {
   include_dirs = [ "." ]
 }
 
-source_set("fault_injection") {
-  sources = [
-    "FaultInjector.cpp",
-    "FaultSocket.cpp",
-  ]
+# Fault storage and matching only; no JSON or socket dependencies.
+source_set("fault_injector") {
+  sources = [ "FaultInjector.cpp" ]
+  public = [ "FaultInjector.h" ]
 
-  public = [
-    "FaultInjector.h",
-    "FaultSocket.h",
-  ]
+  public_configs = [ ":fault_injection_config" ]
+
+  public_deps = [ "${chip_root}/src/lib" ]
+}
+
+source_set("fault_injection") {
+  sources = [ "FaultSocket.cpp" ]
+  public = [ "FaultSocket.h" ]
 
   public_configs = [ ":fault_injection_config" ]
 
   public_deps = [
+    ":fault_injector",
     "${chip_root}/src/lib",
+    "${chip_root}/src/platform",
     "${chip_root}/third_party/jsoncpp",
   ]
 }

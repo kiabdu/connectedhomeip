@@ -336,7 +336,10 @@ if (chip_build_tests) {
     tests = []
 
     if (chip_device_platform == "linux" || chip_device_platform == "darwin") {
-      tests += [ "${chip_root}/examples/all-clusters-app/linux/tests" ]
+      tests += [
+        "${chip_root}/examples/all-clusters-app/linux/tests",
+        "${chip_root}/examples/common/fault_injection/tests",
+      ]
     }
 
     # NXP: EVSE tests depend on ot-simulation; missing headers

@@ -46,13 +46,16 @@ const char * FaultTypeName(FaultType type)
     return "none";
 }
 
-bool Matches(const FaultConfig & config, FaultTarget target, ClusterId cluster, AttributeId attribute, CommandId command)
+uint32_t PathId(const FaultConfig & config)
 {
-    if (config.target != target || config.cluster != cluster)
-    {
-        return false;
-    }
-    return target == FaultTarget::kCommand ? config.command == command : config.attribute == attribute;
+    return config.target == FaultTarget::kCommand ? config.command : config.attribute;
+}
+
+/// Compares fault identity. An empty endpoint only equals another empty endpoint.
+bool Matches(const FaultConfig & config, FaultTarget target, std::optional<EndpointId> endpoint, ClusterId cluster,
+             uint32_t pathId)
+{
+    return config.target == target && config.endpoint == endpoint && config.cluster == cluster && PathId(config) == pathId;
 }
 
 } // anonymous namespace
@@ -74,15 +77,10 @@ CHIP_ERROR FaultInjector::ConfigureFault(const FaultConfig & config)
 
     for (size_t i = 0; i < mFaultCount; ++i)
     {
-        if (Matches(mFaults[i], config.target, config.cluster, config.attribute, config.command))
+        if (Matches(mFaults[i], config.target, config.endpoint, config.cluster, PathId(config)))
         {
             mFaults[i] = config;
-            ChipLogProgress(AppServer, "FaultInjector: updated %s fault on cluster 0x%08" PRIx32,
-                            FaultTypeName(config.faultType), config.cluster);
-            if (mDelegate != nullptr)
-            {
-                mDelegate->OnFaultInjected(config, FaultTypeName(config.faultType));
-            }
+            NotifyConfigured(config, "updated");
             return CHIP_NO_ERROR;
         }
     }
@@ -91,23 +89,45 @@ CHIP_ERROR FaultInjector::ConfigureFault(const FaultConfig & config)
 
     mFaults[mFaultCount] = config;
     ++mFaultCount;
+    NotifyConfigured(config, "configured");
+    return CHIP_NO_ERROR;
+}
 
-    ChipLogProgress(AppServer, "FaultInjector: configured %s fault on cluster 0x%08" PRIx32, FaultTypeName(config.faultType),
-                    config.cluster);
+void FaultInjector::NotifyConfigured(const FaultConfig & config, const char * verb)
+{
+    const char * kind = config.target == FaultTarget::kCommand ? "command" : "attribute";
+    if (config.endpoint.has_value())
+    {
+        ChipLogProgress(AppServer, "FaultInjector: %s %s fault on endpoint %u cluster 0x%08" PRIx32 " %s 0x%08" PRIx32, verb,
+                        FaultTypeName(config.faultType), *config.endpoint, config.cluster, kind, PathId(config));
+    }
+    else
+    {
+        ChipLogProgress(AppServer, "FaultInjector: %s %s fault on all endpoints cluster 0x%08" PRIx32 " %s 0x%08" PRIx32, verb,
+                        FaultTypeName(config.faultType), config.cluster, kind, PathId(config));
+    }
     if (mDelegate != nullptr)
     {
         mDelegate->OnFaultInjected(config, FaultTypeName(config.faultType));
     }
-
-    return CHIP_NO_ERROR;
 }
 
-void FaultInjector::ClearFault(ClusterId cluster, AttributeId attribute)
+void FaultInjector::ClearAttributeFault(std::optional<EndpointId> endpoint, ClusterId cluster, AttributeId attribute)
+{
+    Remove(FaultTarget::kAttribute, endpoint, cluster, attribute);
+}
+
+void FaultInjector::ClearCommandFault(std::optional<EndpointId> endpoint, ClusterId cluster, CommandId command)
+{
+    Remove(FaultTarget::kCommand, endpoint, cluster, command);
+}
+
+void FaultInjector::Remove(FaultTarget target, std::optional<EndpointId> endpoint, ClusterId cluster, uint32_t pathId)
 {
     size_t writeIndex = 0;
     for (size_t readIndex = 0; readIndex < mFaultCount; ++readIndex)
     {
-        if (!Matches(mFaults[readIndex], FaultTarget::kAttribute, cluster, attribute, 0))
+        if (!Matches(mFaults[readIndex], target, endpoint, cluster, pathId))
         {
             mFaults[writeIndex] = mFaults[readIndex];
             ++writeIndex;
@@ -121,21 +141,39 @@ void FaultInjector::ClearAllFaults()
     mFaultCount = 0;
 }
 
-bool FaultInjector::HasFaultForAttribute(ClusterId cluster, AttributeId attribute) const
+bool FaultInjector::HasFaultForAttribute(EndpointId endpoint, ClusterId cluster, AttributeId attribute) const
 {
-    return GetFaultForAttribute(cluster, attribute) != nullptr;
+    return GetFaultForAttribute(endpoint, cluster, attribute) != nullptr;
 }
 
-bool FaultInjector::HasFaultForCommand(ClusterId cluster, CommandId command) const
+bool FaultInjector::HasFaultForCommand(EndpointId endpoint, ClusterId cluster, CommandId command) const
 {
-    return GetFaultForCommand(cluster, command) != nullptr;
+    return GetFaultForCommand(endpoint, cluster, command) != nullptr;
 }
 
-const FaultConfig * FaultInjector::GetFaultForAttribute(ClusterId cluster, AttributeId attribute) const
+const FaultConfig * FaultInjector::GetFaultForAttribute(EndpointId endpoint, ClusterId cluster, AttributeId attribute) const
+{
+    return FindForConcretePath(FaultTarget::kAttribute, endpoint, cluster, attribute);
+}
+
+const FaultConfig * FaultInjector::GetFaultForCommand(EndpointId endpoint, ClusterId cluster, CommandId command) const
+{
+    return FindForConcretePath(FaultTarget::kCommand, endpoint, cluster, command);
+}
+
+const FaultConfig * FaultInjector::FindForConcretePath(FaultTarget target, EndpointId endpoint, ClusterId cluster,
+                                                       uint32_t pathId) const
+{
+    const FaultConfig * fault = Find(target, std::make_optional(endpoint), cluster, pathId);
+    return fault != nullptr ? fault : Find(target, std::nullopt, cluster, pathId);
+}
+
+const FaultConfig * FaultInjector::Find(FaultTarget target, std::optional<EndpointId> endpoint, ClusterId cluster,
+                                        uint32_t pathId) const
 {
     for (size_t i = 0; i < mFaultCount; ++i)
     {
-        if (Matches(mFaults[i], FaultTarget::kAttribute, cluster, attribute, 0))
+        if (Matches(mFaults[i], target, endpoint, cluster, pathId))
         {
             return &mFaults[i];
         }
@@ -143,21 +181,8 @@ const FaultConfig * FaultInjector::GetFaultForAttribute(ClusterId cluster, Attri
     return nullptr;
 }
 
-const FaultConfig * FaultInjector::GetFaultForCommand(ClusterId cluster, CommandId command) const
+CHIP_ERROR FaultInjector::ApplyDataCorruption(const FaultConfig & config, TLV::TLVWriter & writer, TLV::Tag tag)
 {
-    for (size_t i = 0; i < mFaultCount; ++i)
-    {
-        if (Matches(mFaults[i], FaultTarget::kCommand, cluster, command, 0))
-        {
-            return &mFaults[i];
-        }
-    }
-    return nullptr;
-}
-
-CHIP_ERROR FaultInjector::ApplyDataCorruption(const FaultConfig & config, TLV::TLVWriter & writer)
-{
-    TLV::Tag tag = TLV::AnonymousTag();
     switch (config.corruptValueType)
     {
     case FaultValueType::kInt32:
@@ -166,6 +191,8 @@ CHIP_ERROR FaultInjector::ApplyDataCorruption(const FaultConfig & config, TLV::T
         return writer.Put(tag, config.corruptValue.floatValue);
     case FaultValueType::kBool:
         return writer.PutBoolean(tag, config.corruptValue.boolValue);
+    case FaultValueType::kNull:
+        return writer.PutNull(tag);
     }
     return CHIP_ERROR_INVALID_ARGUMENT;
 }

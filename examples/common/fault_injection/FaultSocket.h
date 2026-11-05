@@ -18,22 +18,37 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <thread>
 
 #include <lib/core/CHIPError.h>
+#include <lib/support/Span.h>
 
 namespace chip {
 namespace fault_injection {
 
 /**
+ * @brief Applies one JSON fault command to FaultInjector::Instance()
+ *
+ * `request` holds one JSON object (trailing newline optional). The returned
+ * string is a static, newline-terminated JSON line: {"result":"ok"} or
+ * {"result":"error","detail":"<fixed reason>"}.
+ *
+ * The caller must meet the FaultInjector threading contract (Matter event
+ * loop or Matter stack lock held). Unit tests call this directly.
+ */
+const char * ProcessFaultRequest(CharSpan request);
+
+/**
  * @brief Unix domain socket server for receiving fault injection commands
  *
  * Listens on a configurable socket path and accepts newline-terminated JSON
- * commands to configure or clear fault injections. Each connection is
- * handled synchronously on a dedicated thread; the response is a single
- * JSON line of the form {"result":"ok"} or {"result":"error","detail":"..."}.
+ * commands to configure or clear fault injections. Connections are handled
+ * one at a time on a dedicated thread, which takes the Matter stack lock
+ * while applying each command. A client that sends no complete line within
+ * the read timeout gets an error response.
  */
 class FaultSocketServer
 {
@@ -67,8 +82,8 @@ private:
     void AcceptLoop();
     void HandleConnection(int connectionFd);
 
-    bool mRunning  = false;
-    int mSocketFd  = -1;
+    std::atomic<bool> mRunning{ false };
+    int mSocketFd = -1;
     std::string mSocketPath;
     std::thread mThread;
 };

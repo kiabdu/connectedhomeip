@@ -42,9 +42,9 @@ delayed, or corrupted device behavior.
 |------|---------|
 | `examples/common/fault_injection/FaultInjector.h/.cpp` | Core fault storage, matching, corruption/status helpers. Transport-agnostic — no JSON, no sockets. |
 | `examples/common/fault_injection/FaultSocket.h/.cpp` | Unix domain socket server. JSON parsing and dispatch live here, not in the core. |
-| `examples/common/fault_injection/BUILD.gn` | `source_set("fault_injection")`, deps on `src/lib` + jsoncpp, exports its include dir. |
+| `examples/common/fault_injection/BUILD.gn` | `:fault_injector` (core, `src/lib` only) and `:fault_injection` (socket; adds jsoncpp + `src/platform`). |
 | `examples/common/InetProjectConfig.h` | Raises INET TCP/UDP endpoint pools 32 → 128 (see below). |
-| `examples/common/BUILD.gn` | Group target for common example components. |
+| `examples/common/fault_injection/tests/` | Unit tests (`libFaultInjectionTests`) for FaultInjector and `ProcessFaultRequest()`. |
 | `examples/lighting-app/linux/main.cpp` | Starts/stops `FaultSocketServer` in `ApplicationInit`/`ApplicationShutdown`. |
 | `examples/lighting-app/linux/AppOptions.h/.cpp` | App CLI options, including `--fault-socket <path>`. |
 | `FULT_INJECTION_ORIENT.md` | Working orientation/checklist for AI assistants (status may drift). |
@@ -58,45 +58,62 @@ delayed, or corrupted device behavior.
 - **Matching**: a fault matches either attribute accesses
   (`FaultTarget::kAttribute` + cluster + attribute) or command invocations
   (`FaultTarget::kCommand` + cluster + command), selected by the `target`
-  field. `FaultTarget` exists because Matter command IDs of 0 are valid and
+  field. Internally both use one path ID, so lookups cannot mix up
+  attribute and command IDs.
+- **Endpoints**: `FaultConfig::endpoint` is a `std::optional<EndpointId>`;
+  empty means all endpoints. Lookups take a concrete endpoint and prefer an
+  endpoint-specific fault over an all-endpoints fault on the same path.
+  Nothing in the core is cluster-specific, so new clusters (e.g.
+  Temperature Measurement 0x0402) need no FaultInjector changes. `FaultTarget` exists because Matter command IDs of 0 are valid and
   cannot serve as a "not set" sentinel.
-- **Reconfiguration**: configuring a fault whose (target, cluster, path)
-  matches an existing fault replaces it in place; otherwise it is appended.
+- **Reconfiguration**: configuring a fault whose (target, endpoint,
+  cluster, path) matches an existing fault replaces it in place; otherwise it
+  is appended. Clear uses the same exact identity.
   The log distinguishes "configured" from "updated".
 - **Corruption values**: `FaultConfig::corruptValue` is a union tagged by
-  `FaultValueType` (int32 / float / bool). `ApplyDataCorruption` writes the
-  value into a `TLV::TLVWriter` with an anonymous tag.
+  `FaultValueType` (int32 / float / bool / null), zero-initialized.
+  `ApplyDataCorruption` writes the value into a `TLV::TLVWriter` with the
+  tag the caller passes (the hook passes the encoder's tag).
 - **Fault types**: `data_corruption` (return bad values), `timing_delay`
   (`delay_ms`), `command_drop` (no response), `invalid_status` (custom
   `Protocols::InteractionModel::Status`).
 - **Notifications**: `FaultInjectorDelegate::OnFaultInjected` plus
-  `ChipLogProgress(AppServer, ...)` on every configure.
+  `ChipLogProgress(AppServer, ...)` on every configure. (The delegate is
+  called on configure; no hook triggers faults yet.)
+- **Threading**: not thread-safe. Callers use the Matter event loop or hold
+  the Matter stack lock.
 
 ## FaultSocket protocol
 
 - **Transport**: POSIX `AF_UNIX` stream socket. One command per connection;
-  the server reads up to 4096 bytes, stopping at the first newline or EOF,
-  parses the JSON, writes one response line, closes.
+  the server reads up to 4096 bytes, stopping at the first newline, EOF, or
+  the 1 s read timeout, parses the JSON, writes one response line, closes.
 - **Threading**: `Start()` spawns one accept-loop thread that handles
-  connections sequentially. `Stop()` shuts the socket down to wake `accept()`,
-  closes, joins, unlinks the path.
+  connections sequentially and polls the listening socket every 200 ms.
+  Each command runs under `DeviceLayer::StackLock`. `Stop()` clears the
+  atomic `mRunning`, joins, then closes and unlinks.
+- **Parsing**: `ProcessFaultRequest()` (public, unit-tested) parses and
+  applies one request. jsoncpp is built with `JSON_USE_EXCEPTION=0`, where a
+  wrong-type conversion aborts, so every field is type-checked first.
 - **Commands**:
 
 | Action | Effect |
 |--------|--------|
 | `{"action": "configure", "fault": {...}}` | Adds or replaces one fault |
-| `{"action": "clear", "cluster": N, "attribute": N}` | Removes matching attribute faults |
+| `{"action": "clear", "cluster": N, "attribute": N}` | Removes the all-endpoints attribute fault on that path (add `"endpoint": N` for an endpoint-specific one) |
+| `{"action": "clear", "scope": "command", "cluster": N, "command": N}` | Removes the command fault on that path |
 | `{"action": "clear_all"}` | Removes everything |
 
 - **Fault schema**: `type` (`data_corruption`\|`timing_delay`\|`command_drop`\|
   `invalid_status`), `scope` (`attribute`\|`command`, default attribute),
-  `cluster` (required, non-zero; int or `"0x0006"` string), `attribute`,
-  `command`, `delay_ms`, `status`, `corrupt_value` (bool/int/float).
-- **Response**: `{"result":"ok"}` or `{"result":"error","detail":"..."}`.
-- **Known simplification**: the accept thread mutates `FaultInjector` state
-  without synchronization. Harmless while only the socket writes, but the
-  Step 2 hooks (event-loop threads) will race with it — add a lock or make
-  configure-before-use the contract when hooks land.
+  `endpoint` (optional, 0–65535), `cluster` (required, non-zero; int or
+  `"0x0006"` string), `attribute`, `command`, `delay_ms`, `status` (0–255),
+  `corrupt_value` (bool/int32/float/null).
+  Required per type: `data_corruption` → `corrupt_value`, `timing_delay` →
+  `delay_ms > 0`, `invalid_status` → `status`.
+- **Response**: `{"result":"ok"}` or `{"result":"error","detail":"<reason>"}`
+  with a fixed reason: `invalid json`, `unknown action`, `invalid fault`,
+  `invalid clear`, `fault table full`.
 
 ## Lighting app integration
 

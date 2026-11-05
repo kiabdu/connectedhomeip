@@ -147,6 +147,13 @@ rm -f /tmp/chip_tool_kvs /tmp/chip_tool_config.ini /tmp/chip_tool_config.alpha.i
 
 ## 8. Fault injection control interface
 
+Unit tests for the fault injector and the JSON handling:
+
+```bash
+scripts/run_in_build_env.sh "./scripts/build/build_examples.py --target linux-x64-tests-clang --quiet gen"
+scripts/run_in_build_env.sh "ninja -C out/linux-x64-tests-clang examples/common/fault_injection/tests:libFaultInjectionTests.run"
+```
+
 The emulator starts a fault injection control socket on
 `/tmp/matter_fault.sock` at boot (override with `--fault-socket <path>`).
 Startup log line: `FaultSocket: listening on /tmp/matter_fault.sock`.
@@ -172,12 +179,40 @@ send('{"action": "clear_all"}')
 EOF
 ```
 
-**Actions:** `configure`, `clear` (cluster + attribute), `clear_all`.
+**Actions:**
+
+| Action | Fields | Effect |
+|--------|--------|--------|
+| `configure` | `fault` object (below) | Adds a fault, or replaces the fault on the same (scope, cluster, attribute/command) |
+| `clear` | optional `endpoint`, `cluster`, `attribute` — or `"scope": "command"`, `cluster`, `command` | Removes the fault with exactly that endpoint and path. Without `endpoint`, only the all-endpoints fault is removed. |
+| `clear_all` | — | Removes all faults |
+
+At most 16 faults can be active; a 17th `configure` returns an error.
 
 **Fault fields:** `type` (`data_corruption` | `timing_delay` | `command_drop` |
 `invalid_status`), `scope` (`attribute` | `command`, default attribute),
-`cluster` (int or `"0x0006"` string, required), `attribute`, `command`,
-`delay_ms`, `status`, `corrupt_value` (bool/int/float).
+`endpoint` (0–65535; omit to match all endpoints), `cluster` (int or
+`"0x0006"` string, required, non-zero), `attribute`, `command`, `delay_ms`,
+`status` (IM status code, 0–255), `corrupt_value` (bool, int32, float, or
+`null`; `25.0` is a float, `25` an int).
+
+A fault for one endpoint and a fault for all endpoints on the same path can
+both be active; the endpoint-specific one is used for that endpoint.
+
+Example — report null for MeasuredValue of a temperature sensor on endpoint 2
+(Temperature Measurement cluster 0x0402, attribute 0x0000):
+
+```json
+{"action": "configure", "fault": {"type": "data_corruption", "endpoint": 2, "cluster": "0x0402", "attribute": 0, "corrupt_value": null}}
+```
+
+IDs and numbers accept JSON integers or decimal/`"0x..."` strings. Required
+per type: `data_corruption` → `corrupt_value`, `timing_delay` →
+`delay_ms > 0`, `invalid_status` → `status`.
+
+**Error details:** `invalid json`, `unknown action`, `invalid fault`
+(bad or missing field), `invalid clear`, `fault table full`. The device log
+has the CHIP error for a failed `configure`.
 
 Successful configs log on the device, e.g.
 `FaultInjector: configured data_corruption fault on cluster 0x00000006`.
@@ -185,3 +220,6 @@ Successful configs log on the device, e.g.
 > **Status note:** configuring/clearing works end to end, but the interception
 > hooks (Step 2 in FULT_INJECTION_ORIENT.md) are not implemented yet — faults
 > do not yet affect attribute reads, command handling, or timing.
+>
+> The server handles one connection at a time. A client must send its line
+> within 1 second, otherwise it gets `invalid json` and is disconnected.

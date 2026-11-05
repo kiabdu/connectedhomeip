@@ -19,6 +19,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include <lib/core/CHIPError.h>
 #include <lib/core/DataModelTypes.h>
@@ -57,15 +58,20 @@ enum class FaultValueType : uint8_t
     kInt32 = 1,
     kFloat = 2,
     kBool  = 3,
+    kNull  = 4, ///< Encodes a TLV null; corruptValue is unused
 };
 
 /**
  * @brief Configuration for a single fault injection
+ *
+ * A fault is identified by (target, endpoint, cluster, attribute or command).
+ * An empty `endpoint` matches every endpoint.
  */
 struct FaultConfig
 {
     FaultType faultType = FaultType::kNone;
     FaultTarget target  = FaultTarget::kAttribute;
+    std::optional<EndpointId> endpoint;
     ClusterId cluster  = 0;
     AttributeId attribute = 0;
     CommandId command    = 0;
@@ -78,7 +84,7 @@ struct FaultConfig
         int32_t intValue;
         float floatValue;
         bool boolValue;
-    } corruptValue;
+    } corruptValue = {};
 };
 
 /**
@@ -94,6 +100,12 @@ public:
 
 /**
  * @brief Singleton class for managing fault injection configuration
+ *
+ * Not thread-safe. All calls must happen on the Matter event loop or with the
+ * Matter stack lock held (DeviceLayer::PlatformMgr().LockChipStack()).
+ *
+ * Pointers returned by GetFaultFor*() are valid until the next Configure or
+ * Clear call.
  */
 class FaultInjector
 {
@@ -102,26 +114,52 @@ public:
 
     void SetDelegate(FaultInjectorDelegate * delegate);
 
+    /**
+     * Adds a fault, or replaces the fault with the same identity (see
+     * FaultConfig). A fault for one endpoint and a fault for all endpoints on
+     * the same path are separate entries. Returns CHIP_ERROR_NO_MEMORY when
+     * kMaxFaults faults are configured and none has the same identity.
+     */
     CHIP_ERROR ConfigureFault(const FaultConfig & config);
-    void ClearFault(ClusterId cluster, AttributeId attribute);
+
+    /**
+     * Removes the fault with exactly this identity. An empty `endpoint`
+     * removes only the all-endpoints fault, not endpoint-specific ones.
+     */
+    void ClearAttributeFault(std::optional<EndpointId> endpoint, ClusterId cluster, AttributeId attribute);
+    void ClearCommandFault(std::optional<EndpointId> endpoint, ClusterId cluster, CommandId command);
     void ClearAllFaults();
 
-    bool HasFaultForAttribute(ClusterId cluster, AttributeId attribute) const;
-    bool HasFaultForCommand(ClusterId cluster, CommandId command) const;
+    bool HasFaultForAttribute(EndpointId endpoint, ClusterId cluster, AttributeId attribute) const;
+    bool HasFaultForCommand(EndpointId endpoint, ClusterId cluster, CommandId command) const;
 
-    const FaultConfig * GetFaultForAttribute(ClusterId cluster, AttributeId attribute) const;
-    const FaultConfig * GetFaultForCommand(ClusterId cluster, CommandId command) const;
+    /**
+     * Returns the fault for a concrete path. A fault configured for `endpoint`
+     * takes precedence over an all-endpoints fault on the same path.
+     */
+    const FaultConfig * GetFaultForAttribute(EndpointId endpoint, ClusterId cluster, AttributeId attribute) const;
+    const FaultConfig * GetFaultForCommand(EndpointId endpoint, ClusterId cluster, CommandId command) const;
 
-    CHIP_ERROR ApplyDataCorruption(const FaultConfig & config, TLV::TLVWriter & writer);
+    /**
+     * Writes the configured corrupt value to `writer` using `tag`. The value is
+     * encoded as a signed int, float, bool or null depending on
+     * corruptValueType, regardless of the real attribute type.
+     */
+    CHIP_ERROR ApplyDataCorruption(const FaultConfig & config, TLV::TLVWriter & writer, TLV::Tag tag);
     uint32_t GetDelayForFault(const FaultConfig & config) const;
     bool ShouldDropCommand(const FaultConfig & config) const;
     Protocols::InteractionModel::Status GetInjectedStatus(const FaultConfig & config) const;
+
+    static constexpr size_t kMaxFaults = 16;
 
 private:
     FaultInjector()  = default;
     ~FaultInjector() = default;
 
-    static constexpr size_t kMaxFaults = 16;
+    const FaultConfig * Find(FaultTarget target, std::optional<EndpointId> endpoint, ClusterId cluster, uint32_t pathId) const;
+    const FaultConfig * FindForConcretePath(FaultTarget target, EndpointId endpoint, ClusterId cluster, uint32_t pathId) const;
+    void Remove(FaultTarget target, std::optional<EndpointId> endpoint, ClusterId cluster, uint32_t pathId);
+    void NotifyConfigured(const FaultConfig & config, const char * verb);
 
     FaultInjectorDelegate * mDelegate = nullptr;
     FaultConfig mFaults[kMaxFaults];
