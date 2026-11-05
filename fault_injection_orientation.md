@@ -70,17 +70,18 @@ Current Matter testing tools assume healthy device behavior. We need to test edg
 
 ### Implementation Flow
 
-**Step 1: Fault Injection Control Interface** (Current Phase)
+**Step 1: Fault Injection Control Interface** (done)
 - Create Unix Domain Socket server
 - JSON schema for fault commands
 - Runtime fault configuration
 
-**Step 2: Interception Points**
-- Attribute Access Interface hook
-- Command Handler hook
-- Exchange Layer hook
+**Step 2: Interception Points** (next)
+- Attribute read/write hook
+- Command hook
+- Timing hook
+- See "Hook location for Step 2" below
 
-**Step 3: Integration**
+**Step 3: Integration** (done for chip-lighting-app)
 - Wire into `chip-lighting-app`
 - Configure clusters/attributes to hook
 
@@ -143,13 +144,15 @@ Once the Step 2 hooks exist, triggered faults should be logged as JSON:
 
 ### Current Phase: Steps 1 + 3 (COMPLETE), Steps 2 + 4 (Pending)
 
-**Objective**: Create the basic fault injection control interface.
+**Next objective**: Step 2 — make configured faults change device behavior.
 
-**Status: control interface and app integration are done, build-verified, and
-commissioning-verified end to end. Faults are configurable at runtime via the
+**Status: control interface and app integration are done. Up to commit
+`[fault-injection] Add architecture documentation` they were build-verified
+and commissioning-verified end to end. The later review-fix commit is not
+built yet (see "Verification"). Faults are configurable at runtime via the
 Unix socket; they do not affect attribute/command handling yet (Step 2).**
 
-**Completed** (all committed on branch `fault-injection-feature`):
+**Completed** (committed on `master` and `fault-injection-feature`):
 - [x] Created `examples/common/fault_injection/` directory
 - [x] `FaultInjector.h` with:
   - `FaultType` enum (kDataCorruption, kTimingDelay, kCommandDrop, kInvalidStatus)
@@ -160,8 +163,8 @@ Unix socket; they do not affect attribute/command handling yet (Step 2).**
   - `FaultInjector` singleton class (max 16 faults, fixed array, no heap)
 - [x] `FaultInjector.cpp` with:
   - Fault configuration storage (configure/replace/clear/clear-all)
-  - Matching logic for attribute paths and commands
-  - `ApplyDataCorruption` (TLV write of int/float/bool corrupt values)
+  - Matching by (attribute|command, endpoint or all endpoints, cluster, ID)
+  - `ApplyDataCorruption` (TLV write of int/float/bool/null corrupt values)
   - Delay, command-drop, and injected-status helpers
   - Delegate notifications + ChipLog events
   - Note: JSON parsing is NOT here — it lives in FaultSocket.cpp (transport-agnostic core)
@@ -171,10 +174,10 @@ Unix socket; they do not affect attribute/command handling yet (Step 2).**
     via `ProcessFaultRequest()` (unit-testable without a socket)
   - JSON response: `{"result":"ok"}` / `{"result":"error","detail":"<fixed reason>"}`
   - JSON fault schema: `type` (data_corruption|timing_delay|command_drop|invalid_status),
-    `scope` (attribute|command), `cluster` (int or "0x0006" string), `attribute`/`command`,
-    `delay_ms`, `status`, `corrupt_value` (bool/int/float)
-- [x] Build wiring: `fault_injection/BUILD.gn`, `examples/common/BUILD.gn`,
-  dep added to `examples/lighting-app/linux/BUILD.gn`
+    `scope` (attribute|command), `endpoint` (optional), `cluster` (int or "0x0006" string),
+    `attribute`/`command`, `delay_ms`, `status`, `corrupt_value` (bool/int/float/null)
+- [x] Build wiring: `fault_injection/BUILD.gn`, dep added to
+  `examples/lighting-app/linux/BUILD.gn`, tests registered in `src/BUILD.gn`
 - [x] Verified: lighting app builds and runs; chip-tool commissions and
   reads/writes OnOff attributes (see docs/how-to.md)
 
@@ -205,7 +208,7 @@ examples/common/fault_injection/
   `temperature-sensor` device type). Move `--fault-socket` from the lighting
   app's `AppOptions` to a shared place first, so apps do not copy it.
 
-**Code review fixes (2026-11-05, not yet built — see "Verification" below)**:
+**Code review fixes (2026-11-05, committed, not yet built — see "Verification" below)**:
 - [x] Command faults matched only command ID 0. `Matches()` now takes one
   path ID, so attribute and command IDs cannot be swapped.
 - [x] Wrongly typed JSON fields aborted the app (jsoncpp is built with

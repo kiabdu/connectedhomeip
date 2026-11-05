@@ -218,7 +218,7 @@ Successful configs log on the device, e.g.
 `FaultInjector: configured data_corruption fault on cluster 0x00000006`.
 
 > **Status note:** configuring/clearing works end to end, but the interception
-> hooks (Step 2 in FULT_INJECTION_ORIENT.md) are not implemented yet — faults
+> hooks (Step 2 in fault_injection_orientation.md) are not implemented yet — faults
 > do not yet affect attribute reads, command handling, or timing.
 >
 > The server handles one connection at a time. A client must send its line

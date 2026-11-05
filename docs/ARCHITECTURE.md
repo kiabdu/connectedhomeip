@@ -47,7 +47,7 @@ delayed, or corrupted device behavior.
 | `examples/common/fault_injection/tests/` | Unit tests (`libFaultInjectionTests`) for FaultInjector and `ProcessFaultRequest()`. |
 | `examples/lighting-app/linux/main.cpp` | Starts/stops `FaultSocketServer` in `ApplicationInit`/`ApplicationShutdown`. |
 | `examples/lighting-app/linux/AppOptions.h/.cpp` | App CLI options, including `--fault-socket <path>`. |
-| `FULT_INJECTION_ORIENT.md` | Working orientation/checklist for AI assistants (status may drift). |
+| `fault_injection_orientation.md` | Working orientation/checklist for AI assistants (status may drift). |
 | `docs/how-to.md` | Build/run/commission/test instructions. |
 | `docs/ARCHITECTURE.md` | This document — the design source of truth. |
 
